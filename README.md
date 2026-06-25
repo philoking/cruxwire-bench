@@ -13,10 +13,12 @@ cruxwire writes a corpus archive (best-effort, behind an off-by-default flag);
 the bench reads it read-only. Nothing changes the reader experience, and the
 interactive work never touches the GPU. See [console_spec.md](console_spec.md).
 
-> Status: **Phase 1 scaffold.** Day selection, span sizing, and the window view
-> work against a corpus (real or synthetic). Marking + re-run scoring (Phase 2)
-> and embedding-model testing (Phase 3) have clear extension points but are not
-> built yet. See [SPEC_REVIEW.md](SPEC_REVIEW.md) for design notes and open items.
+> Status: **Phases 1–2 working.** Day selection, span sizing, the window view
+> (clusters + singletons), in-place marking (`same` / `not_same` / `confirm`),
+> re-run at new params, and scoring the result against the marks with a
+> span-scoped diff vs the production baseline. Embedding-model testing (Phase 3)
+> is next. Capture is live on nova. See [SPEC_REVIEW.md](SPEC_REVIEW.md) for
+> design notes and the production findings that shaped the schema.
 
 ## Architecture
 

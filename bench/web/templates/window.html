@@ -1,3 +1,4 @@
+{% set span = {"day": day, "start": start, "end": end, "threshold": threshold} %}
 <div class="panel">
   <div class="row" style="justify-content:space-between">
     <div>
@@ -5,17 +6,62 @@
       <span class="pill">blocks {{ start }}–{{ end }}</span>
       <span class="pill">{{ total }} stories</span>
       <span class="pill">{{ n_clusters }} clusters</span>
-      <span class="pill">threshold {{ "%.2f"|format(threshold) }}</span>
+      <span class="pill">threshold {{ "%.2f"|format(threshold) }}{% if threshold != baseline_threshold %} (baseline {{ "%.2f"|format(baseline_threshold) }}){% endif %}</span>
     </div>
   </div>
-  {% if divergence %}
-    <p class="muted" style="margin-bottom:0">
-      Baseline check: {{ divergence.labeled }} articles carry a production cluster id;
-      {% if divergence.mismatched == 0 %}re-cluster reproduces all of them.
-      {% else %}<span class="warn">{{ divergence.mismatched }} diverge</span> — comparisons against baseline are suspect at this threshold.
-      {% endif %}
-    </p>
+
+  {# ── Score vs marks + diff vs baseline ── #}
+  {% if score.applicable or diff %}
+  <div class="row" style="gap:18px; margin-top:10px">
+    {% if score.applicable %}
+      <span><strong>Marks:</strong> {{ score.satisfied }}/{{ score.applicable }} satisfied</span>
+      {% if score.same_total %}<span class="muted">same {{ score.same_satisfied }}/{{ score.same_total }}</span>{% endif %}
+      {% if score.not_same_total %}<span class="muted">not-same {{ score.not_same_honored }}/{{ score.not_same_total }}</span>{% endif %}
+      {% if score.confirm_total %}<span class="muted">confirm {{ score.confirm_held }}/{{ score.confirm_total }}</span>{% endif %}
+      {% if score.not_applicable %}<span class="muted">({{ score.not_applicable }} n/a in span)</span>{% endif %}
+    {% else %}
+      <span class="muted">No applicable marks in this span yet.</span>
+    {% endif %}
+    {% if diff %}
+      <span><strong>vs baseline:</strong> {{ diff.newly_merged|length }} merged, {{ diff.newly_split|length }} split</span>
+      <span class="{{ 'warn' if collateral else 'muted' }}">{{ collateral }} unmarked collateral</span>
+    {% endif %}
+  </div>
   {% endif %}
+</div>
+
+{# ── Marks list ── #}
+{% if marks %}
+<div class="panel">
+  <h3 style="margin-top:0" class="muted">Marks for {{ day }} <span class="pill">{{ marks|length }}</span></h3>
+  {% for m in marks %}
+    <div class="row" style="justify-content:space-between; padding:3px 0">
+      <span>
+        <span class="pill {{ 'warn' if m.mark_id in unsatisfied else '' }}">{{ m.type }}</span>
+        <span class="muted">{{ m.article_ids|join(', ') }}</span>
+        {% if m.note %}<em class="muted">— {{ m.note }}</em>{% endif %}
+        {% if m.mark_id in unsatisfied %}<span class="warn">✗ not met</span>{% else %}<span style="color:#3fae46">✓</span>{% endif %}
+      </span>
+      <button type="button" class="muted"
+              hx-post="/mark/delete" hx-target="#window" hx-swap="innerHTML"
+              hx-vals='{"mark_id":"{{ m.mark_id }}","day":"{{ day }}","start":"{{ start }}","end":"{{ end }}","threshold":"{{ threshold }}"}'>✕</button>
+    </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+{# ── Mark "same" across selected stories ── #}
+<div class="panel">
+  <div class="row">
+    <strong>Mark a missed merge:</strong>
+    <span class="muted">check 2+ stories below, then</span>
+    <button type="button"
+            hx-post="/mark" hx-target="#window" hx-swap="innerHTML"
+            hx-include="input[name='ids']:checked"
+            hx-vals='{"type":"same","day":"{{ day }}","start":"{{ start }}","end":"{{ end }}","threshold":"{{ threshold }}"}'>
+      Mark selected “same”
+    </button>
+  </div>
 </div>
 
 <div class="grid2">
@@ -23,10 +69,24 @@
     <h3 class="muted">Clusters</h3>
     {% for c in clusters %}
       <div class="cluster">
-        <h3>cluster {{ c.cluster_id[:8] }} · {{ c.size }} stories</h3>
+        <div class="row" style="justify-content:space-between">
+          <h3>cluster {{ c.cluster_id[:8] }} · {{ c.size }} stories</h3>
+          <button type="button" class="muted"
+                  hx-post="/mark" hx-target="#window" hx-swap="innerHTML"
+                  hx-vals='{"type":"confirm","ids_csv":"{{ c.member_ids|join(",") }}","day":"{{ day }}","start":"{{ start }}","end":"{{ end }}","threshold":"{{ threshold }}"}'>✓ confirm</button>
+        </div>
         {% for m in c.members %}
           <div class="story {% if loop.first %}rep{% endif %}">
-            <div>{{ m.title or '(untitled)' }}</div>
+            <div class="row" style="justify-content:space-between">
+              <label style="flex:1">
+                <input type="checkbox" name="ids" value="{{ m.id }}">
+                {{ m.title or '(untitled)' }}
+                {% if m.id in marked_ids %}<span class="pill">marked</span>{% endif %}
+              </label>
+              <button type="button" class="muted" title="this story doesn't belong with the rest"
+                      hx-post="/mark" hx-target="#window" hx-swap="innerHTML"
+                      hx-vals='{"type":"not_same","ids_csv":"{{ ([m.id] + (c.member_ids|reject("equalto", m.id)|list))|join(",") }}","day":"{{ day }}","start":"{{ start }}","end":"{{ end }}","threshold":"{{ threshold }}"}'>✕ doesn’t belong</button>
+            </div>
             <div class="src">{{ m.source or '?' }} · score {{ "%.1f"|format(m.score) }}{% if loop.first %} · rep{% endif %}</div>
           </div>
         {% endfor %}
@@ -38,18 +98,17 @@
 
   <div>
     <h3 class="muted">Singletons <span class="pill">{{ singletons|length }}</span></h3>
-    <p class="muted" style="margin-top:-6px">Where missed merges hide.</p>
+    <p class="muted" style="margin-top:-6px">Where missed merges hide. Check stories that should have been one cluster.</p>
     {% for s in singletons %}
       <div class="story">
-        <div>{{ s.title or '(untitled)' }}</div>
+        <label><input type="checkbox" name="ids" value="{{ s.id }}">
+          {{ s.title or '(untitled)' }}
+          {% if s.id in marked_ids %}<span class="pill">marked</span>{% endif %}
+        </label>
         <div class="src">{{ s.source or '?' }} · score {{ "%.1f"|format(s.score) }}</div>
       </div>
     {% else %}
       <p class="muted">No singletons — everything clustered.</p>
     {% endfor %}
   </div>
-</div>
-
-<div class="panel" style="margin-top:14px">
-  <span class="muted">Marking and re-run scoring (Phase 2: P0-5–P0-7) plug in here.</span>
 </div>

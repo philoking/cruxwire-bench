@@ -1,33 +1,37 @@
 """FastAPI + HTMX console.
 
-Phase 1 surface (spec P0-2..P0-4): pick a day, size a span from one 2-hour block
-up to the full day, and view the full clustering — every cluster and every
-singleton together — re-clustering as the span changes. Marking and re-run
-scoring (Phase 2) are stubbed with clear extension points.
+Phase 1 (P0-2..P0-4): pick a day, size a span, view the full clustering.
+Phase 2 (P0-5..P0-7): mark mistakes in place, re-run at new params, and score
+the result against the marks with a span-scoped diff vs the production baseline.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
 from schema import SCHEMA_VERSION
-from .. import config, engine
+from .. import config, engine, marks, scoring
 from ..corpus import Corpus
 
 BASE = Path(__file__).parent
 templates = Jinja2Templates(directory=str(BASE / "templates"))
-
 app = FastAPI(title="Cruxwire Clustering Bench")
+
+# The faithful baseline clusters at production params (spec → Replay Fidelity).
+BASELINE_THRESHOLD = engine.DEFAULT_SIM_THRESHOLD
 
 
 def get_corpus() -> Corpus:
-    # Cheap to construct (in-memory DuckDB); one per request keeps it simple and
-    # avoids cross-request connection sharing. Optimize later if needed.
     return Corpus()
+
+
+def _id_map(articles: list[dict], result: engine.ClusterResult) -> dict[str, str]:
+    """index->cluster_id  ⇒  article_id->cluster_id (what scoring/marks speak)."""
+    return {articles[i]["id"]: cid for i, cid in result.cluster_id_of.items()}
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -35,14 +39,9 @@ def home(request: Request):
     corpus = get_corpus()
     days = corpus.days()
     return templates.TemplateResponse(
-        request,
-        "day.html",
-        {
-            "days": days,
-            "schema_version": SCHEMA_VERSION,
-            "warning": corpus.schema_warning,
-            "corpus_dir": str(config.CORPUS_DIR),
-        },
+        request, "day.html",
+        {"days": days, "schema_version": SCHEMA_VERSION,
+         "warning": corpus.schema_warning, "corpus_dir": str(config.CORPUS_DIR)},
     )
 
 
@@ -51,67 +50,88 @@ def day_blocks(request: Request, day: str):
     corpus = get_corpus()
     blocks = corpus.blocks(day)
     return templates.TemplateResponse(
-        request,
-        "blocks.html",
+        request, "blocks.html",
         {"day": day, "blocks": blocks, "total": sum(b.story_count for b in blocks)},
     )
 
 
-@app.get("/window", response_class=HTMLResponse)
-def window(request: Request, day: str, start: str, end: str, threshold: float = engine.DEFAULT_SIM_THRESHOLD):
-    """The primary surface: full clustering for the current span."""
+def _render_window(request: Request, day: str, start: str, end: str, threshold: float):
+    """Cluster the span at `threshold`, score it against the day's marks, and
+    diff it against the production baseline. Shared by /window and mark actions."""
     corpus = get_corpus()
     articles = corpus.load_span(day, start, end)
-    result = engine.cluster(articles, sim_threshold=threshold)
 
-    # Baseline fidelity: does our re-cluster reproduce the recorded prod_cluster_id?
-    divergence = _baseline_divergence(articles, result)
+    current = engine.cluster(articles, sim_threshold=threshold)
+    cur_map = _id_map(articles, current)
+
+    day_marks = marks.list_marks(day)
+    score = scoring.score_marks(day_marks, cur_map)
+    unsatisfied = set(score.unsatisfied)
+    marked_ids = {i for m in day_marks for i in m.article_ids}
+
+    # Diff vs baseline (only meaningful when the operator has moved off prod params).
+    diff = None
+    collateral = 0
+    if abs(threshold - BASELINE_THRESHOLD) > 1e-9:
+        baseline = engine.cluster(articles, sim_threshold=BASELINE_THRESHOLD)
+        diff = scoring.diff_clusterings(_id_map(articles, baseline), cur_map)
+        collateral = scoring.collateral(diff, day_marks)
 
     clusters = [
-        {
-            "cluster_id": result.cluster_id_of[grp[0]],
-            "members": [articles[i] for i in grp],
-            "size": len(grp),
-        }
-        for grp in result.clusters
-        if len(grp) > 1
+        {"cluster_id": cur_map[articles[grp[0]]["id"]],
+         "members": [articles[i] for i in grp], "size": len(grp),
+         "member_ids": [articles[i]["id"] for i in grp]}
+        for grp in current.clusters if len(grp) > 1
     ]
-    singletons = [articles[i] for i in result.singletons]
+    singletons = [articles[i] for i in current.singletons]
 
     return templates.TemplateResponse(
-        request,
-        "window.html",
-        {
-            "day": day,
-            "start": start,
-            "end": end,
-            "threshold": threshold,
-            "clusters": clusters,
-            "singletons": singletons,
-            "total": len(articles),
-            "n_clusters": len(clusters),
-            "divergence": divergence,
-        },
+        request, "window.html",
+        {"day": day, "start": start, "end": end, "threshold": threshold,
+         "baseline_threshold": BASELINE_THRESHOLD,
+         "clusters": clusters, "singletons": singletons,
+         "total": len(articles), "n_clusters": len(clusters),
+         "marks": day_marks, "score": score, "diff": diff, "collateral": collateral,
+         "unsatisfied": unsatisfied, "marked_ids": marked_ids},
     )
 
 
-def _baseline_divergence(articles: list[dict], result: engine.ClusterResult) -> dict | None:
-    """Compare our cluster assignment to the recorded prod_cluster_id.
+@app.get("/window", response_class=HTMLResponse)
+def window(request: Request, day: str, start: str, end: str,
+           threshold: float = BASELINE_THRESHOLD):
+    return _render_window(request, day, start, end, threshold)
 
-    Returns None when no prod labels are present (e.g. synthetic corpus), else a
-    summary so the operator knows whether to trust comparisons against baseline
-    (spec → Replay Fidelity). This is at the threshold the operator is viewing —
-    a true baseline check should use production threshold; see SPEC_REVIEW.md.
-    """
-    labeled = [(i, a) for i, a in enumerate(articles) if a.get("prod_cluster_id")]
-    if not labeled:
-        return None
-    # Compare co-membership: for each prod cluster, did our run keep it together?
-    mismatched = 0
-    for _i, a in labeled:
-        # crude per-article check: same prod members should share our cluster id.
-        same_prod = [j for j, b in labeled if b["prod_cluster_id"] == a["prod_cluster_id"]]
-        ours_ids = {result.cluster_id_of.get(j) for j in same_prod}
-        if len(ours_ids) > 1:
-            mismatched += 1
-    return {"labeled": len(labeled), "mismatched": mismatched}
+
+def _collect_ids(ids: list[str], ids_csv: str) -> list[str]:
+    out = list(ids or [])
+    if ids_csv:
+        out += [x for x in ids_csv.split(",") if x]
+    return out
+
+
+@app.post("/mark", response_class=HTMLResponse)
+def create_mark(
+    request: Request,
+    day: str = Form(...), start: str = Form(...), end: str = Form(...),
+    threshold: float = Form(BASELINE_THRESHOLD),
+    type: str = Form(...),
+    ids: list[str] = Form(default=[]),
+    ids_csv: str = Form(default=""),
+    note: str = Form(default=""),
+):
+    article_ids = _collect_ids(ids, ids_csv)
+    try:
+        marks.add_mark(day, type, article_ids, note=note or None)
+    except ValueError:
+        pass  # too-few ids etc. — ignore and just re-render
+    return _render_window(request, day, start, end, threshold)
+
+
+@app.post("/mark/delete", response_class=HTMLResponse)
+def remove_mark(
+    request: Request, mark_id: str = Form(...),
+    day: str = Form(...), start: str = Form(...), end: str = Form(...),
+    threshold: float = Form(BASELINE_THRESHOLD),
+):
+    marks.delete_mark(mark_id)
+    return _render_window(request, day, start, end, threshold)
