@@ -69,6 +69,21 @@ def _render_window(request: Request, day: str, start: str, end: str, threshold: 
     unsatisfied = set(score.unsatisfied)
     marked_ids = {i for m in day_marks for i in m.article_ids}
 
+    # Per-cluster / per-story mark state, so an action visibly changes the view.
+    same_ids: set[str] = set()
+    notsame_ids: set[str] = set()
+    confirmed_cids: set[str] = set()   # cluster ids fully affirmed by a confirm mark
+    for m in day_marks:
+        present = [i for i in m.article_ids if i in cur_map]
+        if m.type == "same":
+            same_ids.update(present)
+        elif m.type == "not_same":
+            notsame_ids.update(present)
+        elif m.type == "confirm" and present:
+            cids = {cur_map[i] for i in present}
+            if len(cids) == 1:
+                confirmed_cids.add(next(iter(cids)))
+
     # Diff vs baseline (only meaningful when the operator has moved off prod params).
     diff = None
     collateral = 0
@@ -92,7 +107,8 @@ def _render_window(request: Request, day: str, start: str, end: str, threshold: 
          "clusters": clusters, "singletons": singletons,
          "total": len(articles), "n_clusters": len(clusters),
          "marks": day_marks, "score": score, "diff": diff, "collateral": collateral,
-         "unsatisfied": unsatisfied, "marked_ids": marked_ids},
+         "unsatisfied": unsatisfied, "marked_ids": marked_ids,
+         "confirmed_cids": confirmed_cids, "same_ids": same_ids, "notsame_ids": notsame_ids},
     )
 
 

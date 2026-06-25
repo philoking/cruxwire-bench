@@ -50,7 +50,7 @@
 </div>
 {% endif %}
 
-{# ── Mark "same" across selected stories ── #}
+{# ── Marking controls + legend ── #}
 <div class="panel">
   <div class="row">
     <strong>Mark a missed merge:</strong>
@@ -62,18 +62,32 @@
       Mark selected “same”
     </button>
   </div>
+  <p class="legend" style="margin:8px 0 0">
+    The checkboxes feed only <em>Mark selected “same”</em>.
+    <span class="b-confirm badge">✓ confirm</span> and <span class="b-notsame badge">✕ doesn’t belong</span>
+    act on the cluster/story they sit on — no selection needed. A confirmed cluster turns green.
+  </p>
 </div>
 
 <div class="grid2">
   <div>
     <h3 class="muted">Clusters</h3>
     {% for c in clusters %}
-      <div class="cluster">
+      {% set is_confirmed = c.cluster_id in confirmed_cids %}
+      <div class="cluster {% if is_confirmed %}confirmed{% endif %}">
         <div class="row" style="justify-content:space-between">
-          <h3>cluster {{ c.cluster_id[:8] }} · {{ c.size }} stories</h3>
-          <button type="button" class="muted"
-                  hx-post="/mark" hx-target="#window" hx-swap="innerHTML"
-                  hx-vals='{"type":"confirm","ids_csv":"{{ c.member_ids|join(",") }}","day":"{{ day }}","start":"{{ start }}","end":"{{ end }}","threshold":"{{ threshold }}"}'>✓ confirm</button>
+          <h3>cluster {{ c.cluster_id[:8] }} · {{ c.size }} stories
+            {% if is_confirmed %}<span class="badge b-confirm">✓ confirmed</span>{% endif %}</h3>
+          {% if is_confirmed %}
+            {% set cmark = (marks|selectattr("type","equalto","confirm")|selectattr("article_ids","equalto",c.member_ids)|list) %}
+            <button type="button" class="muted" title="undo confirm"
+                    hx-post="/mark/delete" hx-target="#window" hx-swap="innerHTML"
+                    hx-vals='{"mark_id":"{{ cmark[0].mark_id if cmark else "" }}","day":"{{ day }}","start":"{{ start }}","end":"{{ end }}","threshold":"{{ threshold }}"}'>↩ undo</button>
+          {% else %}
+            <button type="button" class="muted"
+                    hx-post="/mark" hx-target="#window" hx-swap="innerHTML"
+                    hx-vals='{"type":"confirm","ids_csv":"{{ c.member_ids|join(",") }}","day":"{{ day }}","start":"{{ start }}","end":"{{ end }}","threshold":"{{ threshold }}"}'>✓ confirm correct</button>
+          {% endif %}
         </div>
         {% for m in c.members %}
           <div class="story {% if loop.first %}rep{% endif %}">
@@ -81,7 +95,8 @@
               <label style="flex:1">
                 <input type="checkbox" name="ids" value="{{ m.id }}">
                 {{ m.title or '(untitled)' }}
-                {% if m.id in marked_ids %}<span class="pill">marked</span>{% endif %}
+                {% if m.id in same_ids %}<span class="badge b-same">same</span>{% endif %}
+                {% if m.id in notsame_ids %}<span class="badge b-notsame">not-same</span>{% endif %}
               </label>
               <button type="button" class="muted" title="this story doesn't belong with the rest"
                       hx-post="/mark" hx-target="#window" hx-swap="innerHTML"
@@ -103,7 +118,8 @@
       <div class="story">
         <label><input type="checkbox" name="ids" value="{{ s.id }}">
           {{ s.title or '(untitled)' }}
-          {% if s.id in marked_ids %}<span class="pill">marked</span>{% endif %}
+          {% if s.id in same_ids %}<span class="badge b-same">same</span>{% endif %}
+          {% if s.id in notsame_ids %}<span class="badge b-notsame">not-same</span>{% endif %}
         </label>
         <div class="src">{{ s.source or '?' }} · score {{ "%.1f"|format(s.score) }}</div>
       </div>
