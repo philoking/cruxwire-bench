@@ -41,5 +41,14 @@
     <span class="mut">the crux of the news, debugged · schema v{{ schema_version or '' }}</span>
   </header>
   <main>{% block body %}{% endblock %}</main>
+  <script>
+    // Triage ergonomics: mark actions swap the whole #window via innerHTML,
+    // which would reset scroll to the top. Capture scroll before the request
+    // and restore it once the new DOM has settled, so the operator keeps place.
+    document.body.addEventListener('htmx:beforeRequest', () => { window.__sy = window.scrollY; });
+    document.body.addEventListener('htmx:afterSettle', () => {
+      if (window.__sy != null) window.scrollTo(0, window.__sy);
+    });
+  </script>
 </body>
 </html>
