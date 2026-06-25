@@ -1,0 +1,55 @@
+<div class="panel">
+  <div class="row" style="justify-content:space-between">
+    <div>
+      <strong>{{ day }}</strong>
+      <span class="pill">blocks {{ start }}–{{ end }}</span>
+      <span class="pill">{{ total }} stories</span>
+      <span class="pill">{{ n_clusters }} clusters</span>
+      <span class="pill">threshold {{ "%.2f"|format(threshold) }}</span>
+    </div>
+  </div>
+  {% if divergence %}
+    <p class="muted" style="margin-bottom:0">
+      Baseline check: {{ divergence.labeled }} articles carry a production cluster id;
+      {% if divergence.mismatched == 0 %}re-cluster reproduces all of them.
+      {% else %}<span class="warn">{{ divergence.mismatched }} diverge</span> — comparisons against baseline are suspect at this threshold.
+      {% endif %}
+    </p>
+  {% endif %}
+</div>
+
+<div class="grid2">
+  <div>
+    <h3 class="muted">Clusters</h3>
+    {% for c in clusters %}
+      <div class="cluster">
+        <h3>cluster {{ c.cluster_id[:8] }} · {{ c.size }} stories</h3>
+        {% for m in c.members %}
+          <div class="story {% if loop.first %}rep{% endif %}">
+            <div>{{ m.title or '(untitled)' }}</div>
+            <div class="src">{{ m.source or '?' }} · score {{ "%.1f"|format(m.score) }}{% if loop.first %} · rep{% endif %}</div>
+          </div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <p class="muted">No multi-story clusters in this span.</p>
+    {% endfor %}
+  </div>
+
+  <div>
+    <h3 class="muted">Singletons <span class="pill">{{ singletons|length }}</span></h3>
+    <p class="muted" style="margin-top:-6px">Where missed merges hide.</p>
+    {% for s in singletons %}
+      <div class="story">
+        <div>{{ s.title or '(untitled)' }}</div>
+        <div class="src">{{ s.source or '?' }} · score {{ "%.1f"|format(s.score) }}</div>
+      </div>
+    {% else %}
+      <p class="muted">No singletons — everything clustered.</p>
+    {% endfor %}
+  </div>
+</div>
+
+<div class="panel" style="margin-top:14px">
+  <span class="muted">Marking and re-run scoring (Phase 2: P0-5–P0-7) plug in here.</span>
+</div>

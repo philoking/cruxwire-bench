@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block body %}
+  {% if warning %}
+  <div class="panel warn">
+    ⚠ The corpus contains schema_version {{ warning.seen_version }}, newer than this bench handles
+    ({{ warning.handled_version }}). Proceeding with the columns understood. Update the bench.
+  </div>
+  {% endif %}
+
+  <div class="panel">
+    <h3 style="margin-top:0">Pick a day</h3>
+    {% if days %}
+      <div class="row">
+        {% for d in days %}
+          <button hx-get="/day/{{ d }}" hx-target="#blocks" hx-swap="innerHTML">{{ d }}</button>
+        {% endfor %}
+      </div>
+    {% else %}
+      <p class="muted">No corpus found at <code>{{ corpus_dir }}</code>.</p>
+      <p class="muted">Generate a synthetic day to explore the console:
+        <code>python scripts/gen_synthetic_corpus.py</code></p>
+    {% endif %}
+  </div>
+
+  <div id="blocks"></div>
+{% endblock %}

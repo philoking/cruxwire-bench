@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Clustering Bench{% endblock %}</title>
+  <script src="https://unpkg.com/htmx.org@2.0.3"></script>
+  <style>
+    :root { --bg:#0f1117; --panel:#171a22; --line:#262b36; --ink:#e6e8ee; --mut:#8a90a0; --accent:#7b5cff; --warn:#d98a3b; }
+    * { box-sizing: border-box; }
+    body { margin:0; font:14px/1.5 system-ui,sans-serif; background:var(--bg); color:var(--ink); }
+    header { padding:12px 20px; border-bottom:1px solid var(--line); display:flex; gap:16px; align-items:baseline; }
+    header h1 { font-size:16px; margin:0; } header .mut { color:var(--mut); font-size:12px; }
+    main { padding:20px; max-width:1100px; margin:0 auto; }
+    a { color:var(--accent); text-decoration:none; } a:hover { text-decoration:underline; }
+    .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px; margin-bottom:14px; }
+    .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+    .pill { display:inline-block; padding:2px 8px; border:1px solid var(--line); border-radius:999px; color:var(--mut); font-size:12px; }
+    .cluster { border:1px solid var(--line); border-radius:8px; padding:10px; margin-bottom:10px; }
+    .cluster h3 { margin:0 0 6px; font-size:13px; color:var(--mut); font-weight:600; }
+    .story { padding:6px 8px; border-radius:6px; }
+    .story:hover { background:#1d2230; }
+    .story .src { color:var(--mut); font-size:12px; }
+    .rep { border-left:3px solid var(--accent); }
+    .warn { color:var(--warn); border-color:var(--warn); }
+    button, select, input { background:#1d2230; color:var(--ink); border:1px solid var(--line); border-radius:6px; padding:6px 10px; font:inherit; }
+    button { cursor:pointer; } button:hover { border-color:var(--accent); }
+    .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+    .muted { color:var(--mut); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Clustering Bench</h1>
+    <span class="mut">the crux of the news, debugged · schema v{{ schema_version or '' }}</span>
+  </header>
+  <main>{% block body %}{% endblock %}</main>
+</body>
+</html>
