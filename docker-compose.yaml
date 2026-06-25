@@ -1,25 +1,28 @@
 # Console container. The ONLY deploy-level coupling to cruxwire is the shared
 # corpus volume, mounted read-only here (cruxwire mounts it read-write).
 #
-# When wiring to the real app, point `cruxwire_corpus` at the same named volume /
-# host path cruxwire's archive-writer writes to. Until then, the bind mount below
-# uses ./data/corpus, which the synthetic generator populates.
+# Local dev: defaults read the synthetic corpus at ./data/corpus.
+# On the deploy host: put a .env beside this file (compose auto-reads it):
+#   BENCH_CORPUS_SOURCE=/path/to/cruxwire-corpus   # the real corpus dir
+#   BENCH_PORT=8800
+#   OLLAMA_HOST=http://<ollama-host>:<port>
 services:
   bench:
     build: .
     container_name: cruxwire-bench
+    restart: unless-stopped
     ports:
-      - "8800:8800"
+      - "${BENCH_PORT:-8800}:8800"
     environment:
       BENCH_CORPUS_DIR: /shared/corpus
       BENCH_DATA_DIR: /bench
       OLLAMA_HOST: ${OLLAMA_HOST:-http://host.docker.internal:11434}
       BENCH_PORT: "8800"
     volumes:
-      # Shared corpus archive — READ ONLY. Swap the source for the real
-      # cruxwire volume when wiring up; ./data/corpus works for local testing.
-      - ./data/corpus:/shared/corpus:ro
-      # Bench-private stores — read-write, never on the shared volume.
+      # Shared corpus archive — READ ONLY. Source defaults to the local synthetic
+      # corpus; point BENCH_CORPUS_SOURCE at the real cruxwire corpus to use it.
+      - ${BENCH_CORPUS_SOURCE:-./data/corpus}:/shared/corpus:ro
+      # Bench-private stores (marks, alt embeddings) — read-write, never shared.
       - bench_data:/bench
     extra_hosts:
       - "host.docker.internal:host-gateway"

@@ -75,4 +75,6 @@ docker compose up --build                      # http://localhost:8800
 
 ## License
 
-Private. Not for distribution.
+A personal, workflow-specific tool, kept source-visible so others can see how
+cruxwire's clustering is tuned. No formal license yet (all rights reserved by
+default); open an issue if you want to reuse it.
