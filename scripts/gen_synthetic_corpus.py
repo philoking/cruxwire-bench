@@ -39,36 +39,66 @@ def make_day(day: str, out_dir: Path, seed: int = 7) -> int:
     # One centroid per topic; stories near a centroid should cluster.
     centroids = {t: _unit(rng.normal(size=PROD_EMBEDDING_DIM)) for t in TOPICS}
 
-    written = 0
-    for bi, block in enumerate(BLOCKS):
-        # Accumulate more stories as the day goes on (mirrors carry-forward).
-        n = 6 + bi
-        records = []
-        for k in range(n):
+    iso_day = f"{day[:4]}-{day[4:6]}-{day[6:]}"
+    # Each article gets a stable vector/topic so a carried-forward copy in a later
+    # block is identical except for block_id (mirrors cruxwire's carry-forward).
+    catalog: dict[str, dict] = {}
+
+    def make_article(seq: int) -> dict:
+        aid = f"{day}-art-{seq:03d}"
+        if aid not in catalog:
             topic = pyr.choice(TOPICS)
-            # ~25% are loners (no near neighbour) -> singletons.
             loner = pyr.random() < 0.25
             base = _unit(rng.normal(size=PROD_EMBEDDING_DIM)) if loner else centroids[topic]
-            vec = _unit(base + rng.normal(scale=0.18 if not loner else 0.6, size=PROD_EMBEDDING_DIM))
-            aid = f"{day}-{block}-{k:02d}"
+            # Tiny noise so same-topic vectors land ~0.85 cosine apart (cluster at
+            # 0.82); loners get large noise so they stay singletons. In 768-dim the
+            # noise norm is scale*sqrt(dim), so scale must be small to cluster.
+            scale = 0.5 if loner else 0.017
+            vec = _unit(base + rng.normal(scale=scale, size=PROD_EMBEDDING_DIM))
+            catalog[aid] = {
+                "topic": topic,
+                "title": f"{topic.title()} — story {seq}",
+                "summary": f"A {topic} development with sources reporting on the latest.",
+                "source": pyr.choice(SOURCES),
+                "score": round(pyr.uniform(2.0, 9.5), 1),
+                "has_image": pyr.random() < 0.5,
+                "embedding": [round(float(x), 6) for x in vec],
+                "entities": pyr.sample(["Fed", "NASA", "EU", "OpenAI", "Nvidia", "FIFA"], k=2),
+            }
+        return catalog[aid]
+
+    written = 0
+    next_seq = 0
+    live: list[int] = []  # article seqs currently "open" (carried forward)
+    for bi, block in enumerate(BLOCKS):
+        # Carry forward most of the previous block's stories, retire a few, add new.
+        live = [s for s in live if pyr.random() > 0.25]          # ~retention churn
+        for _ in range(4 + (bi % 3)):                            # fresh stories
+            live.append(next_seq)
+            next_seq += 1
+        records = []
+        for seq in live:
+            a = make_article(seq)
+            aid = f"{day}-art-{seq:03d}"
             records.append({
                 "schema_version": SCHEMA_VERSION,
                 "article_id": aid,
-                "day": f"{day[:4]}-{day[4:6]}-{day[6:]}",
+                "day": iso_day,
                 "block_id": block,
-                "source": pyr.choice(SOURCES),
-                "title": f"{topic.title()} — update {bi}.{k}",
+                "source": a["source"],
+                "title": a["title"],
+                "summary": a["summary"],
                 "url": f"https://example.com/{aid}",
-                "published_at": f"{day[:4]}-{day[4:6]}-{day[6:]}T{block[:2]}:{block[2:]}:00Z",
-                "ingested_at": f"{day[:4]}-{day[4:6]}-{day[6:]}T{block[:2]}:{block[2:]}:05Z",
-                "score": round(pyr.uniform(2.0, 9.5), 1),
-                "has_image": pyr.random() < 0.5,
-                "body_text": f"Synthetic body about {topic}. " * 8,
-                "embedding": [round(float(x), 6) for x in vec],
+                "published_at": f"{iso_day}T{block[:2]}:{block[2:]}:00Z",
+                "ingested_at": f"{iso_day}T{block[:2]}:{block[2:]}:05Z",
+                "score": a["score"],
+                "has_image": a["has_image"],
+                "body_text": None,                  # cruxwire doesn't persist body
+                "embedding": a["embedding"],
                 "embedding_model": PROD_EMBEDDING_MODEL,
                 "embedding_model_version": "synthetic-1",
-                "entities": pyr.sample(["Fed", "NASA", "EU", "OpenAI", "Nvidia", "FIFA"], k=2),
-                "prod_cluster_id": None,   # left null for synthetic; baseline check no-ops
+                "entities": a["entities"],
+                "prod_cluster_id": None,   # null for synthetic; baseline check no-ops
                 "prod_params": {"sim_threshold": 0.82},
             })
         part = out_dir / f"day={day}" / f"block={block}" / "part-0000.jsonl"

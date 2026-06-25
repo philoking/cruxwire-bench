@@ -5,6 +5,60 @@ Notes from reviewing `console_spec.md` against the real
 spec is solid and internally coherent; these are the places where the live code
 diverges from spec assumptions, plus a few decisions worth recording.
 
+---
+
+## ★ Verified against production (nova, 2026-06-25)
+
+Read-only inspection of the live `cruxwire-data` volume on nova confirmed the
+blocking open questions and surfaced two findings that **reshape the spec's
+central model**. These supersede the speculative notes further down where they
+differ.
+
+**Confirmed**
+- **Embedding dim = 768**, model `nomic-embed-text`. Schema sized correctly.
+- Digest article fields present: `score`, `image`, `summary`, `cluster_id`,
+  `cluster_size`, `cluster_rep`, `taste_boost`, `cluster_boost`. So `score` and
+  image (→`has_image`) are available, vindicating SCHEMA_VERSION 2.
+- **No `body_text` and no per-article `ingested_at` are persisted.** `summary`
+  is. → SCHEMA_VERSION 3: store `summary` (the real embed input), demote
+  `body_text` to optional, treat `ingested_at` as the run's `generated_at`.
+
+**Finding A — clustering is BATCH, not streaming (contradicts the Problem Statement).**
+The spec's premise ("clustering is a streaming, destructive process… the context
+is gone") is factually wrong. `run_once()` re-clusters the **entire pool from
+scratch every 2h run** via a stateless `cluster()` call. Nothing is destroyed
+incrementally; each run's full result is in `digest.json`. *Good news:* replay is
+far more tractable than the spec feared — reproducing a run is just
+`cluster(that run's pool)`. The motivating framing in the spec should be
+corrected to "the embeddings and the pre-overwrite pool aren't durably kept,"
+which is the real gap the archive fills.
+
+**Finding B — retention caps the pool, so "full day" ≠ an ever-growing set (BLOCKING design issue).**
+`runs.json` shows the retained digest holding steady at **~60 clusters / 70–140
+articles every run**, all day — not growing into the thousands. `apply_retention`
+prunes whole stories to a rank-weighted ceiling each run. Carry-forward *does*
+accumulate unread stories, but retention bounds the result. Consequences:
+  - The "full-day accumulated set" production actually clustered at end of day is
+    the **last run's pool** (~90 stories), because carry-forward already folded
+    the day into it. **The faithful full-day baseline is the last block's
+    snapshot, NOT the union of every block.**
+  - Unioning all blocks (the spec's "expand the span" taken literally) clusters a
+    set **no production run ever saw** (it includes stories pruned mid-day and
+    double-counts carried-forward ones). That's a legitimate *experiment*, but it
+    is not a "faithful reproduction." The bench now dedups a multi-block span by
+    `article_id` and labels single-block spans as the faithful unit
+    (`corpus.load_span`).
+  - **The n² "Window Clustering Is Exact" worry is moot at current settings:**
+    production never clusters more than ~150 vectors at once. The exact matrix is
+    trivially fast; the *pre-retention union* a few thousand only matters if you
+    deliberately run that experiment.
+
+**→ The one decision for the operator (see handoff):** should the archive capture
+the **post-retention digest** each run (what the reader saw — exact per-run
+reproduction, small), the **pre-retention clustered pool** (everything that could
+have merged, bigger), or **both**? This determines what "the corpus" means and
+how the window/span UI should frame the full-day view.
+
 ## 1. Replay order: score-descending, not `ingested_at` order (blocking for fidelity)
 
 The spec's **Replay Fidelity** section says a faithful baseline re-run "must

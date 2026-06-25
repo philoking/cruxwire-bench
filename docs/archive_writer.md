@@ -19,19 +19,41 @@ this repo.
 - **Best-effort, non-fatal.** Wrap the whole write in try/except; log and swallow.
   It can never raise into the production path or drop a real article.
 
-## Where to call it
+## Where to call it (verified against the real run_once on nova)
 
-In `pipeline.py`, the cluster step already produces enriched articles with
-`id, title, url, source, score, summary, image, published_at, embedding,
-cluster_id, cluster_size, cluster_rep`. The natural call site is **right after
-`cluster(...)` assigns `cluster_id`**, so each record can carry its
-`prod_cluster_id` — the baseline recorded, not inferred. One call:
+`run_once()` already assembles everything the archive needs near the end:
+`scored` (the clustered articles, each with `id, title, summary, source, score,
+image, published_at, cluster_id, cluster_size, cluster_rep`) and `emb_index`
+(`{id: embedding}`, kept just before embeddings are stripped from the digest).
+
+The natural call site is **right where `digest.json` / `embeddings.json` are
+written**, joining the two. One call, behind the flag:
 
 ```python
-# pipeline.py, after cluster(articles, ...) returns, behind the flag:
-from corpus_archive import archive_articles   # single import, single module
-archive_articles(articles, params=current_clustering_params())  # best-effort inside
+# pipeline.py, just before/after _atomic_write_json(DIGEST_FILE, ...):
+from corpus_archive import archive_articles      # single import, single module
+archive_articles(scored, emb_index, generated_at, cfg)   # best-effort inside
 ```
+
+`block_id` is bucketed from `generated_at` (the run timestamp); `ingested_at` is
+that same timestamp (cruxwire keeps no per-article ingest time). The writer joins
+each article's embedding from `emb_index` by id and reads `summary`/`image`/`score`
+straight off the article.
+
+### Which articles to archive — the open decision
+
+`scored` is the **post-retention** set at the write site (what the reader sees).
+That gives an exact, small per-run reproduction. If you also want the
+**pre-retention** pool (stories that were pruned but might have clustered),
+capture `scored` *before* `apply_retention` runs and tag the records. See the
+"one decision for the operator" in [SPEC_REVIEW.md](../SPEC_REVIEW.md). Until
+that's settled, archiving the post-retention digest is the safe default — it is
+exactly what `digest.json` + `embeddings.json` already contain.
+
+> Note: a story carried forward across N runs is archived N times (once per
+> block) with the `cluster_id` it had in each run. That is intended — `block_id`
+> distinguishes them and the bench dedups per span. `article_id` is therefore
+> NOT unique across blocks; the natural key is `(article_id, day, block_id)`.
 
 ## Record shape (one JSON object per line)
 
@@ -41,23 +63,24 @@ but should be filled when available:
 
 ```json
 {
-  "schema_version": 2,
-  "article_id": "<cruxwire article id>",
+  "schema_version": 3,
+  "article_id": "<cruxwire article id = stable_id(url)>",
   "day": "2026-06-24",
   "block_id": "0800",
   "source": "Reuters",
   "title": "...",
+  "summary": "the 1-2 sentence summary; title + \"\\n\" + summary is the embed input",
   "url": "https://...",
   "published_at": "2026-06-24T08:00:00Z",
-  "ingested_at": "2026-06-24T08:02:11Z",
+  "ingested_at": "2026-06-24T08:00:09Z",
   "score": 7.4,
   "has_image": true,
-  "body_text": "full text used for re-embedding under other models",
-  "embedding": [/* 768 floats, nomic-embed-text */],
+  "body_text": null,
+  "embedding": [/* 768 floats, nomic-embed-text, joined from emb_index by id */],
   "embedding_model": "nomic-embed-text",
   "embedding_model_version": "<bump on model/config change>",
   "entities": ["Fed", "ECB"],
-  "prod_cluster_id": "<the cluster_id cruxwire assigned>",
+  "prod_cluster_id": "<the cluster_id cruxwire assigned this run>",
   "prod_params": {"sim_threshold": 0.82, "boost_cap": 1.0, "boost_k": 0.5}
 }
 ```
@@ -65,15 +88,16 @@ but should be filled when available:
 ### Two fields the spec's Data Model omitted — include them
 
 cruxwire's `cluster()` anchors each story on its **highest-scoring** article and
-processes in **score-descending** order; the representative tie-break is
-"score, then has-image". So faithful replay of `prod_cluster_id` is impossible
-without:
+processes in **score-descending** order (the raw `score`, before taste/cluster
+boosts); the representative tie-break is "score, then has-image". So faithful
+replay of `prod_cluster_id` is impossible without:
 
-- **`score`** — the cruxwire relevance score (0–10).
+- **`score`** — the cruxwire relevance score (0–10), as stored on the article.
 - **`has_image`** — whether the article had an image (rep tie-break).
 
-These are why the bench schema is at `SCHEMA_VERSION = 2`. See
-[SPEC_REVIEW.md](../SPEC_REVIEW.md).
+`summary` (v3) is needed so a candidate model can re-embed on the **same input
+text production used** (`title + "\n" + summary`) — body text is never stored.
+See [SPEC_REVIEW.md](../SPEC_REVIEW.md).
 
 ## File layout on the shared volume
 

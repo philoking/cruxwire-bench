@@ -36,7 +36,7 @@ class SchemaWarning:
 
 
 _SELECT_COLS = [
-    "article_id", "day", "block_id", "source", "title", "url",
+    "article_id", "day", "block_id", "source", "title", "summary", "url",
     "published_at", "ingested_at", "score", "has_image", "body_text",
     "embedding", "embedding_model", "embedding_model_version", "entities",
     "prod_cluster_id", "prod_params", "schema_version",
@@ -105,10 +105,19 @@ class Corpus:
 
     # ── span loading ─────────────────────────────────────────────────────
     def load_span(self, day: str, start_block: str, end_block: str) -> list[dict]:
-        """All articles in [start_block, end_block] on `day`, ordered by ingested_at.
+        """The deduplicated article set for blocks [start_block, end_block] on `day`.
 
-        Returns a list of plain dicts the engine consumes. `embedding` is a list
-        of floats (or None). Detects newer schema_version and records a warning.
+        Because cruxwire carries unread stories forward, the SAME article_id is
+        re-archived in every run it survives — so a multi-block span contains
+        duplicate ids. We keep ONE record per article_id (the latest block's, by
+        ingested_at), since that block holds the freshest score/cluster context.
+
+        Note the consequence for fidelity (see SPEC_REVIEW.md): a single-block
+        span is an exact reproduction of that run; a multi-block span is the
+        deduped *union* across the day — a useful experiment, but not a pool any
+        single production run actually clustered (retention prunes between runs).
+
+        Returns plain dicts the engine consumes; `embedding` is a list or None.
         """
         rel = _read_relation(self.con, self.corpus_dir)
         if rel is None:
@@ -118,20 +127,21 @@ class Corpus:
         cur = self.con.execute(
             f"SELECT {cols} FROM corpus "
             "WHERE CAST(day AS VARCHAR)=? AND block_id >= ? AND block_id <= ? "
-            "ORDER BY ingested_at NULLS LAST, article_id",
+            "ORDER BY ingested_at NULLS LAST, block_id, article_id",
             [day, start_block, end_block],
         )
         names = [d[0] for d in cur.description]
         records = [dict(zip(names, row)) for row in cur.fetchall()]
-        out = []
+
+        # Dedup by article_id, keeping the latest occurrence (rows are ascending).
+        by_id: dict[str, dict] = {}
         max_seen = 0
         for r in records:
-            sv = r.get("schema_version") or 0
-            max_seen = max(max_seen, int(sv))
-            out.append(self._to_engine_dict(r))
+            max_seen = max(max_seen, int(r.get("schema_version") or 0))
+            by_id[r.get("article_id")] = r
         if max_seen > SCHEMA_VERSION:
             self._warning = SchemaWarning(seen_version=max_seen, handled_version=SCHEMA_VERSION)
-        return out
+        return [self._to_engine_dict(r) for r in by_id.values()]
 
     @staticmethod
     def _to_engine_dict(r: dict) -> dict:
@@ -139,6 +149,7 @@ class Corpus:
         return {
             "id": r.get("article_id"),
             "title": r.get("title"),
+            "summary": r.get("summary"),
             "source": r.get("source"),
             "url": r.get("url"),
             "score": r.get("score") or 0.0,

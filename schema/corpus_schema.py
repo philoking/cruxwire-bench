@@ -21,7 +21,11 @@ from __future__ import annotations
 # v1: spec Data Model fields.
 # v2: added `score` and `has_image` (required to faithfully replay cruxwire's
 #     score-anchored clustering — see module docstring and SPEC_REVIEW.md).
-SCHEMA_VERSION = 2
+# v3: added `summary`; demoted `body_text` to optional. Verified on production
+#     (nova): cruxwire embeds `title + "\n" + summary` and NEVER persists body
+#     text. `summary` is therefore both available and the exact embed-input, so
+#     re-embedding a candidate model on title+summary is the fair comparison.
+SCHEMA_VERSION = 3
 
 # cruxwire today: EMBED_MODEL='nomic-embed-text', 768-dim. Sizes the embedding
 # column. (Spec Open Question "Production embedding dimension" — confirm 768.)
@@ -32,17 +36,18 @@ PROD_EMBEDDING_DIM = 768
 # knows and ignores newer unknown ones (Parquet/DuckDB tolerate extra columns).
 CORPUS_FIELDS: dict[str, tuple[str, bool, str]] = {
     "schema_version":          ("int",       False, "bumped on additive changes; bench warns if newer"),
-    "article_id":              ("text",      False, "stable id, primary key (cruxwire article 'id')"),
+    "article_id":              ("text",      False, "cruxwire article 'id' (stable_id(url)); NOT globally unique — recurs across blocks via carry-forward. Natural key is (article_id, day, block_id)"),
     "day":                     ("date",      False, "YYYY-MM-DD the article belongs to, for day selection"),
-    "block_id":                ("text",      False, "the 2-hour ingest block, e.g. '0800'; spans are contiguous blocks"),
+    "block_id":                ("text",      False, "the 2-hour run block, e.g. '0800'; bucketed from the run's generated_at. Spans are contiguous blocks"),
     "source":                  ("text",      True,  "outlet / feed"),
-    "title":                   ("text",      True,  "shown in the window view, searchable"),
+    "title":                   ("text",      True,  "shown in the window view, searchable; first line of the embed input"),
+    "summary":                 ("text",      True,  "cruxwire's 1-2 sentence summary; second line of the embed input (v3)"),
     "url":                     ("text",      True,  ""),
     "published_at":            ("timestamp", True,  "from the article"),
-    "ingested_at":             ("timestamp", True,  "ordering key; see Replay Fidelity"),
+    "ingested_at":             ("timestamp", True,  "run-level: the run's generated_at (cruxwire stores no per-article ingest time)"),
     "score":                   ("double",    True,  "cruxwire relevance score 0-10; anchor ordering + rep tie-break (v2)"),
     "has_image":               ("bool",      True,  "rep tie-break: score, then has-image (v2)"),
-    "body_text":               ("text",      True,  "kept for re-embedding under other models; or body_path if external"),
+    "body_text":               ("text",      True,  "OPTIONAL: not persisted by cruxwire today; embed input is title+summary, not body (v3)"),
     "embedding":               ("float[]",   True,  f"production embedding, {PROD_EMBEDDING_DIM}-dim for nomic-embed-text"),
     "embedding_model":         ("text",      True,  "e.g. nomic-embed-text"),
     "embedding_model_version": ("text",      True,  "bump when the production model or config changes"),
